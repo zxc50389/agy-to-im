@@ -13,6 +13,7 @@ class ConfigError(Exception):
 
 
 _MODEL_RE = re.compile(r"^[a-zA-Z0-9._][a-zA-Z0-9._\-]*$")
+_AUTO_COMPACT_RE = re.compile(r"^[0-9]+(?:\.[0-9]+)?[KkMm%]?$")
 _VALID_MODES = frozenset({"code", "plan"})
 
 
@@ -29,6 +30,10 @@ class AgyConfig:
     default_workdir: str = ""
     model: str = ""
     mode: str = "code"  # "code" (auto) | "plan" (read-only sandbox)
+    auto_compact: str = ""  # AGY_CLI_AUTO_COMPACT_OVERRIDE, e.g. "200K", "50%"
+    model_prefixes: list[str] = field(default_factory=list)
+    stream_mode: bool = False  # persistent stream-json worker + live Telegram streaming
+    settings: dict[str, Any] = field(default_factory=dict)  # inline JSON passed to --settings
 
 
 @dataclass
@@ -139,6 +144,36 @@ def load_config(path: Path) -> Config:
             f"agy.mode must be one of {sorted(_VALID_MODES)}, got {mode!r}"
         )
 
+    auto_compact = str(a_raw.get("auto_compact") or "").strip()
+    if auto_compact and not _AUTO_COMPACT_RE.match(auto_compact):
+        raise ConfigError(
+            f"agy.auto_compact must look like '200K', '0.5M', '80%', or an integer, got {auto_compact!r}"
+        )
+
+    raw_prefixes = a_raw.get("model_prefixes")
+    if raw_prefixes is None:
+        model_prefixes: list[str] = []
+    elif isinstance(raw_prefixes, list) and all(isinstance(p, str) for p in raw_prefixes):
+        model_prefixes = [p for p in raw_prefixes if p]
+    else:
+        raise ConfigError("agy.model_prefixes must be a list of strings")
+
+    raw_stream = a_raw.get("stream_mode")
+    if raw_stream is None:
+        stream_mode = True
+    elif isinstance(raw_stream, bool):
+        stream_mode = raw_stream
+    else:
+        raise ConfigError("agy.stream_mode must be a boolean")
+
+    raw_settings = a_raw.get("settings")
+    if raw_settings is None:
+        agy_settings: dict[str, Any] = {}
+    elif isinstance(raw_settings, dict):
+        agy_settings = dict(raw_settings)
+    else:
+        raise ConfigError("agy.settings must be a JSON object")
+
     return Config(
         telegram=TelegramConfig(
             bot_token=bot_token,
@@ -150,6 +185,10 @@ def load_config(path: Path) -> Config:
             default_workdir=str(a_raw.get("default_workdir") or ""),
             model=model,
             mode=mode,
+            auto_compact=auto_compact,
+            model_prefixes=model_prefixes,
+            stream_mode=stream_mode,
+            settings=agy_settings,
         ),
         safety=_parse_safety(raw.get("safety")),
     )

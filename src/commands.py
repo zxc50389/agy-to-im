@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime
+import logging
 import os
 import shutil
+import subprocess
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -18,6 +20,7 @@ if TYPE_CHECKING:
     from src.state import ChatState
     from src.telegram import CallbackQuery, InboundMessage
 
+LOG = logging.getLogger("antigravity_telegram_bridge")
 DEFAULT_MODEL = "gemini-4-neon-high"
 
 MODEL_CHOICES: tuple[str, ...] = (
@@ -49,6 +52,57 @@ BOT_COMMANDS: tuple[dict[str, str], ...] = (
     {"command": "reset", "description": "Start a fresh agy session"},
 )
 _DEFAULT_TOKEN = "_DEFAULT"
+_ACTIVE_MODEL_CHOICES: tuple[str, ...] = MODEL_CHOICES
+
+
+def get_model_choices() -> tuple[str, ...]:
+    """Return the active list of selectable models (dynamic if refreshed, else fallback)."""
+    return _ACTIVE_MODEL_CHOICES
+
+
+def parse_agy_models_output(raw: str, prefixes: list[str] | None = None) -> tuple[str, ...]:
+    """Parse `agy models` stdout into deduplicated model slugs, optionally filtered by prefix."""
+    found: list[str] = []
+    seen: set[str] = set()
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        slug = stripped.split()[0]
+        if not is_valid_model(slug) or slug in seen:
+            continue
+        if prefixes and not any(slug.startswith(p) for p in prefixes):
+            continue
+        seen.add(slug)
+        found.append(slug)
+    return tuple(found)
+
+
+def refresh_model_choices(
+    agy_path: str = "agy",
+    prefixes: list[str] | None = None,
+) -> tuple[str, ...]:
+    """Query `agy models` and update the active model list. Falls back on failure."""
+    global _ACTIVE_MODEL_CHOICES
+    resolved = shutil.which(agy_path) or agy_path
+    try:
+        res = subprocess.run(
+            [resolved, "models"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=15,
+        )
+        if res.returncode == 0:
+            parsed = parse_agy_models_output(res.stdout, prefixes=prefixes)
+            if parsed:
+                _ACTIVE_MODEL_CHOICES = parsed
+                return _ACTIVE_MODEL_CHOICES
+        else:
+            LOG.warning("agy models exited %d: %s", res.returncode, res.stderr.strip())
+    except Exception as err:
+        LOG.warning("refresh_model_choices failed: %s", err)
+    return _ACTIVE_MODEL_CHOICES
 
 WELCOME_TEXT = (
     "👋 Welcome! I'm your Antigravity bridge bot.\n\n"
@@ -128,7 +182,7 @@ def _settings_keyboard() -> InlineKeyboard:
 
 def _model_keyboard(current_per_chat: str) -> InlineKeyboard:
     rows: InlineKeyboard = []
-    for m in MODEL_CHOICES:
+    for m in get_model_choices():
         marker = "● " if m == current_per_chat else "○ "
         rows.append([{"text": marker + m, "callback_data": f"m:{m}"}])
     default_marker = "● " if not current_per_chat else "○ "
@@ -318,7 +372,7 @@ def handle_callback(
         if choice == _DEFAULT_TOKEN:
             cs.model = ""
             toast = "Using config default"
-        elif choice in MODEL_CHOICES:
+        elif choice in get_model_choices():
             cs.model = choice
             toast = f"Model: {choice}"
         else:

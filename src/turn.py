@@ -7,7 +7,7 @@ import shutil
 import time
 from typing import TYPE_CHECKING
 
-from src.agy_runner import run_agy
+from src.agy_runner import WORKER_POOL, StreamCallback, run_agy
 from src.health import record_latency
 
 if TYPE_CHECKING:
@@ -48,6 +48,7 @@ async def _compile_memory_layer(chat_dir: str, graphify_bin: str) -> None:
 async def execute_agy(
     tg: "_TelegramLike", chat_id: int, msg: "InboundMessage",
     cs: "ChatState", cfg: "Config", agy_path: str,
+    *, on_event: StreamCallback | None = None,
 ) -> tuple[str, int]:
     prompt = (msg.text or "").strip()
     if not prompt:
@@ -56,15 +57,31 @@ async def execute_agy(
     hb_task = asyncio.create_task(_heartbeat(tg, chat_id, hb_stop))
     turn_start = time.perf_counter()
     try:
-        result = await run_agy(
-            prompt=prompt,
-            chat_dir=cs.chat_dir,
-            has_session=cs.has_session,
-            model=cs.model or cfg.agy.model,
-            mode=cs.mode or cfg.agy.mode,
-            agy_path=agy_path,
-            timeout=AGY_TIMEOUT_S,
-        )
+        if cfg.agy.stream_mode:
+            result = await WORKER_POOL.run_turn(
+                prompt=prompt,
+                chat_dir=cs.chat_dir,
+                has_session=cs.has_session,
+                model=cs.model or cfg.agy.model,
+                mode=cs.mode or cfg.agy.mode,
+                agy_path=agy_path,
+                timeout=AGY_TIMEOUT_S,
+                auto_compact=cfg.agy.auto_compact,
+                settings=cfg.agy.settings,
+                on_event=on_event,
+            )
+        else:
+            result = await run_agy(
+                prompt=prompt,
+                chat_dir=cs.chat_dir,
+                has_session=cs.has_session,
+                model=cs.model or cfg.agy.model,
+                mode=cs.mode or cfg.agy.mode,
+                agy_path=agy_path,
+                timeout=AGY_TIMEOUT_S,
+                auto_compact=cfg.agy.auto_compact,
+                settings=cfg.agy.settings,
+            )
         if result.exit_code == 0:
             graphify_bin = shutil.which("graphify")
             if graphify_bin:

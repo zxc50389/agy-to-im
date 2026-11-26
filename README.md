@@ -20,9 +20,10 @@ A Telegram bridge daemon for the Google Antigravity CLI (`agy`), allowing persis
 ### Features
 | Feature | Status |
 |---|---|
-| Telegram ↔ `agy` messaging | ✅ |
+| Telegram ↔ `agy` messaging (persistent `stream-json` worker + live progress streaming) | ✅ |
 | Per-chat project isolation (`--new-project` / `--continue`) | ✅ |
-| Inline keyboard control panel (`/model`, `/usage`, `/settings`, `/mode`) | ✅ |
+| Dynamic `agy models` sync + inline keyboard (`/model`, `/usage`, `/reset`) | ✅ |
+| Auto-compaction threshold (`AGY_CLI_AUTO_COMPACT_OVERRIDE`) & custom `--settings` | ✅ |
 | Photo + document upload support with configurable safety routing | ✅ |
 | Configurable file type allowlist (pass/warn/hold/block per category) | ✅ |
 | Per-user rate limiting with sliding window | ✅ |
@@ -71,8 +72,12 @@ For the full step-by-step guide see `docs/deployment.md`. Day-to-day operations 
   "agy": {
     "chats_root": "",
     "default_workdir": "",
-    "model": "",
-    "mode": "code"
+    "model": "gemini-4-neon-high",
+    "mode": "code",
+    "auto_compact": "200K",
+    "model_prefixes": ["gemini-4-", "gemini-pro-orchestrator"],
+    "stream_mode": true,
+    "settings": {}
   }
 }
 ```

@@ -7,7 +7,11 @@
   "agy": {
     "chats_root": "",
     "default_workdir": "",
-    "model": "",
-    "mode": "code"
+    "model": "gemini-4-neon-high",
+    "mode": "code",
+    "auto_compact": "200K",
+    "model_prefixes": ["gemini-4-", "gemini-pro-orchestrator"],
+    "stream_mode": true,
+    "settings": {}
   }
 }

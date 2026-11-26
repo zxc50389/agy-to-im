@@ -12,15 +12,20 @@ from dataclasses import dataclass, is_dataclass, replace
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Protocol
 
-from src.agy_runner import AgyResult
-from src.commands import BOT_COMMANDS, BridgeReply, handle_callback, handle_text_command
+from src.agy_runner import WORKER_POOL, AgyResult, StreamEvent
+from src.commands import (
+    BOT_COMMANDS,
+    handle_callback,
+    handle_text_command,
+    refresh_model_choices,
+)
 from src.config import Config, load_config
 from src.health import configure_memory_limit, memory_healthy, record_error, record_turn, start_server
 from src.media import build_media_prompt, clean_inbox
 from src.okf_memory import attach_memory
 from src.queue import TurnQueue
 from src.state import ChatState, State, load_state, save_state
-from src.telegram import CallbackQuery, InboundMessage, TelegramClient, is_authorized
+from src.telegram import CallbackQuery, InboundMessage, TelegramClient, chunk_message, is_authorized
 from src.turn import execute_agy
 from src.webhook import drain_webhook_updates, start_webhook_server
 
@@ -104,6 +109,83 @@ def _format_timeout_reply() -> str:
     )
 
 
+_TOOL_LABELS: dict[str, str] = {
+    "view_file": "Reading file",
+    "read_file": "Reading file",
+    "run_command": "Running command",
+    "grep_search": "Searching files",
+    "find_by_name": "Finding files",
+    "list_dir": "Listing directory",
+    "search_web": "Searching web",
+    "read_url_content": "Reading webpage",
+    "write_to_file": "Writing file",
+    "write_file": "Writing file",
+    "replace_file_content": "Editing file",
+    "edit_file": "Editing file",
+    "invoke_subagent": "Running subagent",
+}
+_STREAM_EDIT_INTERVAL_S = 1.2
+_STREAM_PREVIEW_LIMIT = 3900
+
+
+class _TelegramStreamer:
+    """Streams live tool/text progress into one Telegram message via throttled edits."""
+
+    def __init__(self, tg: _TelegramLike, chat_id: int) -> None:
+        self._tg = tg
+        self._chat_id = chat_id
+        self._msg_id: int | None = None
+        self._last_edit: float = 0.0
+        self._last_rendered: str = ""
+        self._has_text: bool = False
+
+    async def start(self) -> None:
+        try:
+            self._msg_id = await self._tg.send_message(self._chat_id, "💭 Thinking…")
+            self._last_rendered = "💭 Thinking…"
+            self._last_edit = time.monotonic()
+        except Exception:
+            self._msg_id = None
+
+    async def _maybe_edit(self, text: str, *, force: bool = False) -> None:
+        if self._msg_id is None or text == self._last_rendered:
+            return
+        now = time.monotonic()
+        if not force and (now - self._last_edit) < _STREAM_EDIT_INTERVAL_S:
+            return
+        try:
+            await self._tg.edit_message_text(self._chat_id, self._msg_id, text)
+            self._last_rendered = text
+            self._last_edit = now
+        except Exception:
+            pass
+
+    async def on_event(self, ev: StreamEvent) -> None:
+        if ev.kind == "tool" and not self._has_text:
+            label = _TOOL_LABELS.get(ev.tool_name, f"Running {ev.tool_name}")
+            await self._maybe_edit(f"🔧 {label}…")
+        elif ev.kind == "text" and ev.text:
+            self._has_text = True
+            preview = ev.text
+            if len(preview) > _STREAM_PREVIEW_LIMIT:
+                preview = preview[:_STREAM_PREVIEW_LIMIT] + "\n…"
+            await self._maybe_edit(preview + " ▍")
+
+    async def finalize(self, reply: str) -> None:
+        chunks = chunk_message(reply)
+        if not chunks:
+            return
+        if self._msg_id is not None:
+            try:
+                await self._tg.edit_message_text(self._chat_id, self._msg_id, chunks[0])
+                for extra in chunks[1:]:
+                    await self._tg.send_message(self._chat_id, extra)
+                return
+            except Exception as err:
+                LOG.warning("stream finalize edit failed (sending fresh): %s", err)
+        await self._tg.send_message(self._chat_id, reply)
+
+
 async def _do_turn(
     msg: InboundMessage, tg: _TelegramLike, cs: ChatState,
     cfg: Config, agy_path: str,
@@ -118,7 +200,17 @@ async def _do_turn(
         await tg.send_chat_action(msg.chat_id, "typing")
     except Exception:
         pass
-    text, code = await execute_agy(tg, msg.chat_id, msg, cs, cfg, agy_path)
+
+    streamer: _TelegramStreamer | None = None
+    if cfg.agy.stream_mode:
+        streamer = _TelegramStreamer(tg, msg.chat_id)
+        await streamer.start()
+        text, code = await execute_agy(
+            tg, msg.chat_id, msg, cs, cfg, agy_path, on_event=streamer.on_event,
+        )
+    else:
+        text, code = await execute_agy(tg, msg.chat_id, msg, cs, cfg, agy_path)
+
     if code == 124:
         record_error()
         reply = _format_timeout_reply()
@@ -145,7 +237,10 @@ async def _do_turn(
     except Exception:
         pass
     try:
-        await tg.send_message(msg.chat_id, reply)
+        if streamer is not None:
+            await streamer.finalize(reply)
+        else:
+            await tg.send_message(msg.chat_id, reply)
     except Exception as err:
         LOG.error("sendMessage failed chat=%s: %s", msg.chat_id, err)
 
@@ -162,8 +257,11 @@ async def _process_text(
     cs = _ensure_chat_state(state, msg.chat_id, chats_root)
     save_state(state_path, state)
 
+    prev_state = (cs.has_session, cs.model, cs.mode)
     reply = await handle_text_command(msg, cs, cfg)
     if reply is not None:
+        if (cs.has_session, cs.model, cs.mode) != prev_state:
+            await WORKER_POOL.invalidate(cs.chat_dir)
         save_state(state_path, state)
         try:
             await tg.send_message(msg.chat_id, reply.text, keyboard=reply.keyboard)
@@ -206,7 +304,10 @@ async def _process_callback(
         return
 
     cs = _ensure_chat_state(state, cq.chat_id, chats_root)
+    prev_state = (cs.has_session, cs.model, cs.mode)
     reply = handle_callback(cq, cs, cfg)
+    if (cs.has_session, cs.model, cs.mode) != prev_state:
+        await WORKER_POOL.invalidate(cs.chat_dir)
     save_state(state_path, state)
 
     try:
@@ -278,6 +379,9 @@ async def run(
 
                     msg = parse_update_for_daemon(upd)
                     if msg is not None:
+                        if not is_authorized(msg, cfg.telegram):
+                            LOG.info("drop unauth user=%s", msg.user_id)
+                            continue
                         allowed, wait = _QUEUE.check_ratelimit(msg.user_id)
                         if not allowed:
                             await tg.send_message(msg.chat_id, f"⏳ Rate limit. Wait {wait}s.")
@@ -299,6 +403,7 @@ async def run(
                     await asyncio.sleep(0.1 if webhook_url else 0)
                 save_state(state_path, state)
         finally:
+            await WORKER_POOL.close_all()
             if webhook_url and hasattr(tg, "delete_webhook"):
                 try:
                     await tg.delete_webhook()  # type: ignore[attr-defined]
@@ -363,15 +468,18 @@ def main() -> None:
         try:
             bot_username = await _detect_bot_username(cfg)
             await _register_bot_commands(cfg)
+            models = refresh_model_choices(agy_path, cfg.agy.model_prefixes)
             info = DaemonInfo(
                 bot_username=bot_username,
                 started_at=time.time(),
                 agy_version=_detect_agy_version(agy_path),
             )
             LOG.info(
-                "bridge starting bot=%s agy=%s chats_root=%s mode=%s model=%s",
+                "bridge starting bot=%s agy=%s chats_root=%s mode=%s model=%s stream=%s auto_compact=%s models=%d",
                 info.bot_username, info.agy_version, chats_root,
                 cfg.agy.mode, cfg.agy.model or "(default)",
+                cfg.agy.stream_mode, cfg.agy.auto_compact or "(default)",
+                len(models),
             )
 
             if wh_url:
