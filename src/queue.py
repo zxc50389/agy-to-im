@@ -35,6 +35,7 @@ class TurnQueue:
     owner_chat_id: int = 0
     # Rate limit state
     _limits: dict[int, RateLimit] = field(default_factory=dict)
+    max_depth: int = MAX_QUEUE_DEPTH
     max_per_user: int = 5
     cooldown_seconds: int = 2
 
@@ -70,13 +71,16 @@ class TurnQueue:
 
         # Owner bypass
         if cid == self.owner_chat_id:
+            self.active = True
             return None
 
         # Already active — enqueue
         if self.active:
-            if self._already_queued(cid):
-                return None  # replace previous
-            if len(self.pending) >= MAX_QUEUE_DEPTH:
+            for i, (queued_cid, _, fut) in enumerate(self.pending):
+                if queued_cid == cid:
+                    self.pending[i] = (cid, msg, fut)
+                    return f"⏳ Updated queued message (position #{i + 1})."
+            if len(self.pending) >= self.max_depth:
                 return "🚫 Queue full. Try again shortly."
             fut: asyncio.Future[str | None] = asyncio.Future()
             self.pending.append((cid, msg, fut))

@@ -62,6 +62,15 @@ def test_logs_tails_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
     assert out_lines[-1] == "line 99"
 
 
+def test_logs_zero_clamped_to_one(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    log_file = tmp_path / "bridge.log"
+    log_file.write_text("a\nb\nc\n")
+    monkeypatch.setattr("src.control.LOG_FILE", log_file)
+    result = _run_handle("logs", lines=0)
+    assert result["ok"] is True
+    assert result["output"] == "c"
+
+
 def test_logs_fallback_to_journalctl_when_file_missing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

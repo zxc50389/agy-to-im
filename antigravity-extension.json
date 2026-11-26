@@ -1,6 +1,6 @@
 {
   "name": "telegram-bridge",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Bridge Telegram chats to Antigravity CLI (agy) sessions (long-running daemon controlled via this tool).",
   "config_file": "config.json",
   "tools": [

@@ -232,7 +232,6 @@ async def test_run_logs_one_line_per_turn(
     daemon_mod.LOG.addHandler(handler)
     old_level = daemon_mod.LOG.level
     daemon_mod.LOG.setLevel(logging.INFO)
-    print("HANDLERS:", daemon_mod.LOG.handlers, "LEVEL:", daemon_mod.LOG.level)
     try:
         await run(
             cfg=_cfg(),

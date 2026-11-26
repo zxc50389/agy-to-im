@@ -134,7 +134,6 @@ def _model_keyboard(current_per_chat: str) -> InlineKeyboard:
     rows.append([
         {"text": default_marker + "Use config default", "callback_data": f"m:{_DEFAULT_TOKEN}"}
     ])
-    rows.append([{"text": "← Back to settings", "callback_data": "nav:settings"}])
     return rows
 
 

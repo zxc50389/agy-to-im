@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import hmac
 import json
 import logging
@@ -14,15 +13,20 @@ if TYPE_CHECKING:
 LOG = logging.getLogger("antigravity_telegram_bridge")
 
 WEBHOOK_PATH = "/webhook"
+MAX_WEBHOOK_BODY_BYTES = 1_048_576  # 1 MiB
 
 
 def _verify_secret(body: bytes, header: str, token: str) -> bool:
+    """Verify Telegram's X-Telegram-Bot-Api-Secret-Token header (constant-time)."""
     if not header or not token:
         return False
-    expected = hmac.new(
-        hashlib.sha256(token.encode()).digest(),
-        body, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(expected, header)
+    return hmac.compare_digest(header, token)
+
+
+async def _send_status(writer: asyncio.StreamWriter, status: str) -> None:
+    writer.write(f"HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".encode())
+    await writer.drain()
+    writer.close()
 
 
 async def webhook_handler(
@@ -32,50 +36,86 @@ async def webhook_handler(
     """Handle one incoming webhook request."""
     try:
         raw = b""
+        content_length = 0
+        body_start = 0
         while True:
             chunk = await asyncio.wait_for(reader.read(4096), timeout=5)
             if not chunk:
                 break
             raw += chunk
             if b"\r\n\r\n" in raw:
-                headers_end = raw.index(b"\r\n\r\n") + 4
-                body_start = headers_end
-                if b"Content-Length:" in raw:
-                    cl_pos = raw.index(b"Content-Length:") + 16
-                    cl_end = raw.index(b"\r\n", cl_pos)
-                    content_length = int(raw[cl_pos:cl_end])
-                    while len(raw) - body_start < content_length:
-                        more = await asyncio.wait_for(reader.read(4096), timeout=5)
-                        if not more:
-                            break
-                        raw += more
+                headers_end = raw.index(b"\r\n\r\n")
+                body_start = headers_end + 4
+                header_text = raw[:headers_end].decode("utf-8", errors="replace")
+                for line in header_text.split("\r\n")[1:]:
+                    if line.lower().startswith("content-length:"):
+                        content_length = int(line.split(":", 1)[1].strip())
+                        break
+                if content_length < 0 or content_length > MAX_WEBHOOK_BODY_BYTES:
+                    await _send_status(writer, "413 Payload Too Large")
+                    return
+                while len(raw) - body_start < content_length:
+                    more = await asyncio.wait_for(reader.read(4096), timeout=5)
+                    if not more:
+                        break
+                    raw += more
+                    if len(raw) - body_start > MAX_WEBHOOK_BODY_BYTES:
+                        await _send_status(writer, "413 Payload Too Large")
+                        return
                 break
+            if len(raw) > 65_536:
+                await _send_status(writer, "431 Request Header Fields Too Large")
+                return
 
-        body = raw[raw.index(b"\r\n\r\n") + 4:]
-
-        secret_header = ""
-        for line in raw[:raw.index(b"\r\n\r\n")].decode(errors="replace").split("\r\n"):
-            if line.lower().startswith("x-telegram-bot-api-secret-token:"):
-                secret_header = line.split(":", 1)[1].strip()
-
-        if not _verify_secret(body, secret_header, token):
-            writer.write(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
-            await writer.drain()
-            writer.close()
+        if b"\r\n\r\n" not in raw:
+            await _send_status(writer, "400 Bad Request")
             return
 
-        update = json.loads(body)
-        _webhook_updates.append(update)
+        headers_end = raw.index(b"\r\n\r\n")
+        header_lines = raw[:headers_end].decode("utf-8", errors="replace").split("\r\n")
+        req_parts = header_lines[0].split(" ")
+        method = req_parts[0] if len(req_parts) >= 1 else ""
+        path = req_parts[1].split("?", 1)[0] if len(req_parts) >= 2 else ""
 
-        writer.write(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
-        await writer.drain()
-        writer.close()
+        if path != WEBHOOK_PATH:
+            await _send_status(writer, "404 Not Found")
+            return
+        if method != "POST":
+            await _send_status(writer, "405 Method Not Allowed")
+            return
+
+        body = raw[headers_end + 4:]
+        if content_length and len(body) > content_length:
+            body = body[:content_length]
+        if len(body) > MAX_WEBHOOK_BODY_BYTES:
+            await _send_status(writer, "413 Payload Too Large")
+            return
+
+        secret_header = ""
+        for line in header_lines[1:]:
+            if line.lower().startswith("x-telegram-bot-api-secret-token:"):
+                secret_header = line.split(":", 1)[1].strip()
+                break
+
+        if not _verify_secret(body, secret_header, token):
+            await _send_status(writer, "403 Forbidden")
+            return
+
+        try:
+            update = json.loads(body)
+        except json.JSONDecodeError:
+            await _send_status(writer, "400 Bad Request")
+            return
+        if not isinstance(update, dict):
+            await _send_status(writer, "400 Bad Request")
+            return
+
+        _webhook_updates.append(update)
+        await _send_status(writer, "200 OK")
     except Exception as e:
         LOG.debug("webhook handler error: %s", e)
         try:
-            writer.write(b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n")
-            await writer.drain()
-            writer.close()
+            await _send_status(writer, "500 Internal Server Error")
         except Exception:
             pass
 

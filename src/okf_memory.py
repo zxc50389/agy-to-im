@@ -32,7 +32,16 @@ def _okf_timestamp() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def attach_memory(chat_dir: str, state: Any | None = None, bridge_version: str = "") -> Path:
+_MAX_LOG_ENTRIES = 100
+
+
+def attach_memory(
+    chat_dir: str,
+    state: Any | None = None,
+    bridge_version: str = "",
+    bot_username: str = "",
+    memory_limit_bytes: int = 805_306_368,
+) -> Path:
     """Write the current bridge state as an OKF v0.1 bundle in the agy workspace.
 
     The bundle is placed at {chat_dir}/okf_memory/ and consists of:
@@ -77,6 +86,8 @@ confidence: high
         (concepts_root / "bridge_state.md").write_text(session_md, encoding="utf-8")
         concept_files.append({"name": "Bridge Session State", "path": "concepts/bridge_state.md", "tags": "bridge, session"})
 
+    limit_mb = max(1, memory_limit_bytes // 1_048_576)
+
     # 2. Bridge configuration concept (redacted)
     cfg_md = f"""---
 type: config
@@ -91,13 +102,13 @@ confidence: high
 
 ## Identity
 - Version: {bridge_version or '0.2.0'}
-- Bot: @Gemini_to_im_bot
+- Bot: {bot_username or '(unknown)'}
 - Default mode: code
 - Default model: (config default)
 
 ## Safety
 - Media routing: configurable categories (pass/warn/hold/block)
-- Memory ceiling: 768 MiB
+- Memory ceiling: {limit_mb} MiB
 - Queue depth: 10
 - Rate limit: 5 msg / 2s window
 
@@ -127,8 +138,8 @@ confidence: high
 
 ## Bridge Process
 - Resident memory: {rss_mb} MiB
-- Memory limit: 768 MiB
-- Healthy: {'yes' if rss_mb < 768 else 'NO — OVER LIMIT'}
+- Memory limit: {limit_mb} MiB
+- Healthy: {'yes' if rss_mb < limit_mb else 'NO — OVER LIMIT'}
 
 ## Session Summary
 - Chats tracked: {len(state.chats) if hasattr(state, 'chats') else 0}
@@ -157,12 +168,18 @@ context window on irrelevant state.
 """
     (root / INDEX_FILE).write_text(index_content, encoding="utf-8")
 
-    # ── Write/append log.md ──────────────────────────────────────────
+    # ── Write/append log.md (bounded to recent entries) ──────────────
     log_entry = f"## {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')} UTC\n- Memory bundle regenerated ({len(concept_files)} concepts)\n"
     log_path = root / LOG_FILE
     if log_path.exists():
         existing = log_path.read_text(encoding="utf-8")
-        log_path.write_text(existing + "\n" + log_entry, encoding="utf-8")
+        entries = [e.strip() for e in existing.split("\n## ") if e.strip()]
+        if entries and entries[0].startswith("# Memory Change Log"):
+            entries = entries[1:]
+        entries = [f"## {e}" if not e.startswith("## ") else e for e in entries]
+        entries.append(log_entry.strip())
+        trimmed = entries[-_MAX_LOG_ENTRIES:]
+        log_path.write_text("# Memory Change Log\n\n" + "\n\n".join(trimmed) + "\n", encoding="utf-8")
     else:
         log_path.write_text(f"# Memory Change Log\n\n{log_entry}", encoding="utf-8")
 

@@ -2,19 +2,20 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
 import signal
 import subprocess
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, is_dataclass, replace
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Protocol
 
 from src.agy_runner import AgyResult
 from src.commands import BOT_COMMANDS, BridgeReply, handle_callback, handle_text_command
 from src.config import Config, load_config
-from src.health import memory_healthy, record_error, record_turn, start_server
+from src.health import configure_memory_limit, memory_healthy, record_error, record_turn, start_server
 from src.media import build_media_prompt, clean_inbox
 from src.okf_memory import attach_memory
 from src.queue import TurnQueue
@@ -106,10 +107,13 @@ def _format_timeout_reply() -> str:
 async def _do_turn(
     msg: InboundMessage, tg: _TelegramLike, cs: ChatState,
     cfg: Config, agy_path: str,
+    *, state: State | None = None, info: DaemonInfo | None = None,
 ) -> None:
     prompt = await build_media_prompt(msg, tg, cs, cfg)
     if prompt is None:
         return
+    if is_dataclass(msg) and hasattr(msg, "text"):
+        msg = replace(msg, text=prompt)
     try:
         await tg.send_chat_action(msg.chat_id, "typing")
     except Exception:
@@ -120,7 +124,8 @@ async def _do_turn(
         reply = _format_timeout_reply()
     elif code != 0:
         record_error()
-        reply = f"⚠️ agy error (exit {code})"
+        err_detail = f"\n\n{text}" if text else ""
+        reply = f"⚠️ agy error (exit {code}){err_detail}"
     else:
         record_turn()
         if not cs.has_session:
@@ -129,8 +134,14 @@ async def _do_turn(
         reply = text or "(empty reply)"
     # Post-turn maintenance: update OKF memory layer, clean inbox
     try:
-        attach_memory(cs.chat_dir, None, bridge_version="0.2.0")
-        clean_inbox(cs.chat_dir)
+        attach_memory(
+            cs.chat_dir,
+            state,
+            bridge_version="0.2.0",
+            bot_username=info.bot_username if info else "",
+            memory_limit_bytes=cfg.safety.memory.limit_bytes,
+        )
+        clean_inbox(cs.chat_dir, max_age_hours=cfg.safety.inbox.max_age_hours)
     except Exception:
         pass
     try:
@@ -165,7 +176,7 @@ async def _process_text(
         await tg.send_message(msg.chat_id, status)
         return
 
-    await _do_turn(msg, tg, cs, cfg, agy_path)
+    await _do_turn(msg, tg, cs, cfg, agy_path, state=state, info=info)
     _QUEUE.complete()
 
     while True:
@@ -174,7 +185,7 @@ async def _process_text(
             break
         nxt_msg, nxt_fut = next_item
         nxt_cs = _ensure_chat_state(state, nxt_msg.chat_id, chats_root)
-        await _do_turn(nxt_msg, tg, nxt_cs, cfg, agy_path)
+        await _do_turn(nxt_msg, tg, nxt_cs, cfg, agy_path, state=state, info=info)
         _QUEUE.complete()
         nxt_fut.set_result(None)
 
@@ -232,52 +243,67 @@ async def run(
     *, cfg: Config, state_path: Path, chats_root: Path,
     tg: _TelegramLike, agy_path: str, info: DaemonInfo,
     stop_event: asyncio.Event,
+    webhook_url: str = "", webhook_secret: str = "",
 ) -> None:
     _QUEUE.owner_chat_id = cfg.telegram.allowed_user_ids[0] if cfg.telegram.allowed_user_ids else 0
+    _QUEUE.max_depth = cfg.safety.queue.max_depth
     _QUEUE.max_per_user = cfg.safety.queue.max_per_user
     _QUEUE.cooldown_seconds = cfg.safety.queue.cooldown_seconds
+    configure_memory_limit(cfg.safety.memory.limit_bytes)
+    mem_check_interval = max(1, cfg.safety.memory.check_interval_loops)
     chats_root.mkdir(parents=True, exist_ok=True)
     state = load_state(state_path, chats_root)
     tick = 0
     async with tg:
-        while not stop_event.is_set():
-            tick += 1
-            # Health gate: check memory every ~30 loop iterations (~30s at idle,
-            # faster when processing bursts). Self-terminate if over limit so
-            # systemd Restart=on-failure brings up a clean replacement.
-            if tick % 30 == 0 and not memory_healthy():
-                LOG.critical("memory limit exceeded — triggering self-restart")
-                stop_event.set()
-                break
+        if webhook_url and hasattr(tg, "set_webhook"):
+            wh_res = await tg.set_webhook(webhook_url, webhook_secret)  # type: ignore[attr-defined]
+            LOG.info("webhook setup: %s", wh_res.get("description") if wh_res.get("ok") else wh_res)
+        try:
+            while not stop_event.is_set():
+                tick += 1
+                # Health gate: self-terminate if over limit so systemd
+                # Restart=on-failure brings up a clean replacement.
+                if tick % mem_check_interval == 0 and not memory_healthy(cfg.safety.memory.limit_bytes):
+                    LOG.critical("memory limit exceeded — triggering self-restart")
+                    stop_event.set()
+                    break
 
-            updates = await _fetch_updates(tg, state.last_update_id + 1)
-            wh_updates = drain_webhook_updates()
-            updates.extend(wh_updates)
-            for upd in updates:
-                state.last_update_id = max(state.last_update_id, int(upd.get("update_id", 0)))
+                if webhook_url:
+                    updates = drain_webhook_updates()
+                else:
+                    updates = await _fetch_updates(tg, state.last_update_id + 1)
+                    updates.extend(drain_webhook_updates())
+                for upd in updates:
+                    state.last_update_id = max(state.last_update_id, int(upd.get("update_id", 0)))
 
-                msg = parse_update_for_daemon(upd)
-                if msg is not None:
-                    allowed, wait = _QUEUE.check_ratelimit(msg.user_id)
-                    if not allowed:
-                        await tg.send_message(msg.chat_id, f"⏳ Rate limit. Wait {wait}s.")
+                    msg = parse_update_for_daemon(upd)
+                    if msg is not None:
+                        allowed, wait = _QUEUE.check_ratelimit(msg.user_id)
+                        if not allowed:
+                            await tg.send_message(msg.chat_id, f"⏳ Rate limit. Wait {wait}s.")
+                            continue
+                        await _process_text(
+                            msg, tg, state, state_path, chats_root,
+                            cfg, agy_path, info,
+                        )
                         continue
-                    await _process_text(
-                        msg, tg, state, state_path, chats_root,
-                        cfg, agy_path, info,
-                    )
-                    continue
 
-                cq = parse_callback_for_daemon(upd)
-                if cq is not None:
-                    await _process_callback(
-                        cq, tg, state, state_path, chats_root, cfg, info,
-                    )
-                    continue
+                    cq = parse_callback_for_daemon(upd)
+                    if cq is not None:
+                        await _process_callback(
+                            cq, tg, state, state_path, chats_root, cfg, info,
+                        )
+                        continue
 
-            if not updates:
-                await asyncio.sleep(0)
-            save_state(state_path, state)
+                if not updates:
+                    await asyncio.sleep(0.1 if webhook_url else 0)
+                save_state(state_path, state)
+        finally:
+            if webhook_url and hasattr(tg, "delete_webhook"):
+                try:
+                    await tg.delete_webhook()  # type: ignore[attr-defined]
+                except Exception:
+                    pass
 
 
 # Aliases to avoid name collisions in the loop above
@@ -349,14 +375,16 @@ def main() -> None:
             )
 
             if wh_url:
-                wh_secret = cfg.telegram.bot_token[:20]
-                wh_res = await tg.set_webhook(wh_url, wh_secret)
-                LOG.info("webhook setup: %s", wh_res.get("description") if wh_res.get("ok") else wh_res)
+                wh_secret = (
+                    os.environ.get("CTI_WEBHOOK_SECRET")
+                    or hashlib.sha256(cfg.telegram.bot_token.encode()).hexdigest()[:32]
+                )
                 wh_task = asyncio.create_task(start_webhook_server(wh_port, tg, wh_secret))
 
             await run(
                 cfg=cfg, state_path=state_path, chats_root=chats_root,
                 tg=tg, agy_path=agy_path, info=info, stop_event=stop,
+                webhook_url=wh_url, webhook_secret=wh_secret,
             )
         finally:
             if wh_task is not None:
@@ -365,10 +393,6 @@ def main() -> None:
                     await wh_task
                 except Exception:
                     pass
-            try:
-                await tg.delete_webhook()
-            except Exception:
-                pass
             health_srv.close()
             await health_srv.wait_closed()
 

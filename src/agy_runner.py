@@ -58,11 +58,7 @@ def _build_args(
         args.append("--new-project")
 
     if model:
-        # If model is a base model without explicit effort suffix, supply --effort high
-        if any(model.startswith(prefix) for prefix in ("gemini-3.7", "gemini-3.6", "gemini-3.5", "gemini-3.1")) and not any(model.endswith(sfx) for sfx in ("-low", "-medium", "-high")):
-            args.extend(["--model", model, "--effort", "high"])
-        else:
-            args.extend(["--model", model])
+        args.extend(["--model", model])
 
     args.append("--dangerously-skip-permissions")
 
@@ -113,7 +109,7 @@ def _run_sync(
 
     text = stdout.decode("utf-8", errors="replace")
     if truncated:
-        text += "\n\n[output truncated at 1MiB]"
+        text += "\n\n[output truncated at 512KiB]"
 
     stderr_out = completed.stderr.decode("utf-8", errors="replace") if completed.stderr else ""
     gc.collect()

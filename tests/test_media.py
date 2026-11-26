@@ -148,6 +148,27 @@ def test_save_to_inbox_size_cap(tmp_path: Path) -> None:
     assert len(names) == 1
 
 
+def test_save_to_inbox_blocks_path_traversal(tmp_path: Path) -> None:
+    path = save_to_inbox(str(tmp_path), "../../evil.txt", b"safe")
+    inbox = tmp_path / INBOX_DIR_NAME
+    assert path.parent.resolve() == inbox.resolve()
+    assert not (tmp_path.parent / "evil.txt").exists()
+
+
+def test_classify_unknown_exceeds_max_file_bytes() -> None:
+    cat, routing, reason = classify_file(
+        "application/octet-stream",
+        "huge.bin",
+        60_000_000,
+        {},
+        default_routing="warn",
+        max_file_bytes=52_428_800,
+    )
+    assert cat == "unknown"
+    assert routing == "block"
+    assert "exceeds" in reason
+
+
 # ── clean_inbox ───────────────────────────────────────────────────
 
 

@@ -22,11 +22,9 @@ from src.webhook import (
 # ── _verify_secret edge cases ─────────────────────────────────────
 
 def test_verify_secret_valid() -> None:
-    token = "secret123"
+    token = "secret_token_123"
     body = json.dumps({"update_id": 1}).encode()
-    sig = hmac.new(hashlib.sha256(token.encode()).digest(),
-                   body, hashlib.sha256).hexdigest()
-    assert _verify_secret(body, sig, token) is True
+    assert _verify_secret(body, token, token) is True
 
 
 def test_verify_secret_wrong_signature() -> None:
@@ -45,30 +43,14 @@ def test_verify_secret_empty_both() -> None:
     assert _verify_secret(b"{}", "", "") is False
 
 
-def test_verify_secret_different_body_same_token() -> None:
-    token = "t"
-    b1 = b'{"u":1}'
-    b2 = b'{"u":2}'
-    sig = hmac.new(hashlib.sha256(token.encode()).digest(),
-                   b1, hashlib.sha256).hexdigest()
-    assert _verify_secret(b2, sig, token) is False
+def test_verify_secret_prefix_mismatch() -> None:
+    assert _verify_secret(b"{}", "secret", "secret123") is False
 
 
 def test_verify_secret_large_body() -> None:
-    token = "t"
+    token = "valid_secret_token"
     body = b"x" * 10000
-    sig = hmac.new(hashlib.sha256(token.encode()).digest(),
-                   body, hashlib.sha256).hexdigest()
-    assert _verify_secret(body, sig, token) is True
-
-
-def test_verify_secret_binary_safe() -> None:
-    # Token with weird chars
-    token = "t\x00k\xff"
-    body = b"body"
-    sig = hmac.new(hashlib.sha256(token.encode()).digest(),
-                   body, hashlib.sha256).hexdigest()
-    assert _verify_secret(body, sig, token) is True
+    assert _verify_secret(body, token, token) is True
 
 
 # ── drain_webhook_updates edge cases ─────────────────────────────
@@ -134,13 +116,11 @@ async def test_handler_rejects_invalid_secret() -> None:
 
 @pytest.mark.asyncio
 async def test_handler_accepts_valid_secret() -> None:
-    token = "abc123"
+    token = "abc123_secret"
     body = json.dumps({"update_id": 1}).encode()
-    sig = hmac.new(hashlib.sha256(token.encode()).digest(),
-                   body, hashlib.sha256).hexdigest()
     req = _http_request(body=body, headers={
         "Host": "localhost",
-        "X-Telegram-Bot-Api-Secret-Token": sig,
+        "X-Telegram-Bot-Api-Secret-Token": token,
     })
     reader = asyncio.StreamReader()
     reader.feed_data(req)
@@ -154,6 +134,34 @@ async def test_handler_accepts_valid_secret() -> None:
     updates = drain_webhook_updates()
     assert len(updates) == 1
     assert updates[0]["update_id"] == 1
+
+
+@pytest.mark.asyncio
+async def test_handler_rejects_wrong_path() -> None:
+    req = _http_request(path="/other", body=b"{}", headers={
+        "X-Telegram-Bot-Api-Secret-Token": "tok",
+    })
+    reader = asyncio.StreamReader()
+    reader.feed_data(req)
+    reader.feed_eof()
+    writer = _MockWriter()
+    await webhook_handler(reader, writer, AsyncMock(), "tok")  # type: ignore[arg-type]
+    assert b"404" in writer.written[0]
+
+
+@pytest.mark.asyncio
+async def test_handler_rejects_oversized_body() -> None:
+    req = (
+        b"POST /webhook HTTP/1.1\r\n"
+        b"content-length: 2000000\r\n"
+        b"X-Telegram-Bot-Api-Secret-Token: tok\r\n\r\n"
+    )
+    reader = asyncio.StreamReader()
+    reader.feed_data(req)
+    reader.feed_eof()
+    writer = _MockWriter()
+    await webhook_handler(reader, writer, AsyncMock(), "tok")  # type: ignore[arg-type]
+    assert b"413" in writer.written[0]
 
 
 @pytest.mark.asyncio

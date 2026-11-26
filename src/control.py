@@ -37,6 +37,7 @@ def _action_status() -> dict[str, Any]:
 
 
 def _action_logs(lines: int = 50) -> dict[str, Any]:
+    lines = max(1, int(lines))
     if LOG_FILE.exists():
         text = LOG_FILE.read_text(errors="replace").splitlines()
         return {"ok": True, "output": "\n".join(text[-lines:])}
@@ -113,7 +114,8 @@ def handle(payload: dict[str, Any]) -> dict[str, Any]:
     handlers = {"start": _action_start, "stop": _action_stop,
                 "status": _action_status, "setup": _action_setup}
     if action == "logs":
-        return _action_logs(int(payload.get("lines") or 50))
+        raw_lines = payload.get("lines")
+        return _action_logs(50 if raw_lines is None else int(raw_lines))
     fn = handlers.get(action)
     if fn:
         return fn()

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import fnmatch
+import re
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -14,6 +15,16 @@ MAX_PHOTO_SIZE = 10 * 1024 * 1024
 MAX_FILE_SIZE = 20 * 1024 * 1024
 
 INBOX_DIR_NAME = ".bridge-inbox"
+_SAFE_NAME_RE = re.compile(r"[^a-zA-Z0-9._\-]+")
+
+
+def _sanitize_filename(filename: str) -> str:
+    """Strip path segments and unsafe characters so writes stay inside inbox."""
+    base = Path(filename.replace("\\", "/")).name
+    base = _SAFE_NAME_RE.sub("_", base).strip("._")
+    if not base:
+        return "file"
+    return base[:180]
 
 
 # ── Legacy helpers (kept for backward compat during migration) ────────────
@@ -38,7 +49,9 @@ def save_to_inbox(workdir: str, filename: str, data: bytes, max_total_bytes: int
         total -= oldest.stat().st_size
         oldest.unlink()
     ts = int(time.time())
-    dest = inbox / f"{ts}_{filename}"
+    safe_name = _sanitize_filename(filename)
+    dest = inbox / f"{ts}_{safe_name}"
+    dest.resolve().relative_to(inbox.resolve())
     dest.write_bytes(data)
     return dest
 
@@ -112,11 +125,12 @@ def classify_file(
     file_size: int,
     categories: dict[str, "CategoryConfig"],
     default_routing: str = "block",
+    max_file_bytes: int | None = None,
 ) -> tuple[str, str, str]:
     """Classify a file and return (category, routing, reason).
-    
+
     Priority: MIME match → extension fallback → default routing.
-    Size check applied after category match.
+    Size check applied after category match (and to unknown files if max_file_bytes is set).
     """
     result = _classify_by_mime(mime, categories)
     if result is None:
@@ -126,6 +140,8 @@ def classify_file(
         if file_size > cat_cfg.max_size_bytes:
             return cat_name, "block", f"exceeds {cat_cfg.max_size_bytes // 1_048_576}MB limit"
         return cat_name, cat_cfg.routing, ""
+    if max_file_bytes is not None and file_size > max_file_bytes:
+        return "unknown", "block", f"exceeds {max_file_bytes // 1_048_576}MB limit"
     return "unknown", default_routing, ""
 
 
@@ -213,6 +229,7 @@ async def build_media_prompt(
             mime, fname, fsize,
             cfg.safety.media.categories,
             cfg.safety.media.default_routing,
+            max_file_bytes=cfg.safety.media.max_file_bytes,
         )
 
         if routing == "block":

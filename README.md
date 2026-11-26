@@ -26,18 +26,18 @@ A Telegram bridge daemon for the Google Antigravity CLI (`agy`), allowing persis
 |---|---|
 | Telegram ↔ `agy` messaging | ✅ |
 | Per-chat project isolation (`--new-project` / `--continue`) | ✅ |
-| Inline keyboard control panel (`/settings`, `/model`, `/mode`) | ✅ |
+| Inline keyboard control panel (`/model`, `/usage`, `/settings`, `/mode`) | ✅ |
 | Photo + document upload support with configurable safety routing | ✅ |
 | Configurable file type allowlist (pass/warn/hold/block per category) | ✅ |
 | Per-user rate limiting with sliding window | ✅ |
 | Memory health gate with automatic self-restart | ✅ |
 | Zombie subprocess reaping + garbage collection | ✅ |
 | Multi-user FIFO turn queue | ✅ |
-| Webhook mode with HMAC verification | ✅ |
+| Webhook mode with secret-token verification | ✅ |
 | Health endpoint (`/health`) and Prometheus metrics (`/metrics`) | ✅ |
-| `systemd --user` service with hardening | ✅ |
+| `systemd --user` service | ✅ |
 | Plugin tool for `agy` (`bridge start/stop/status/logs/setup`) | ✅ |
-| 105 tests, 100 % pass | ✅ |
+| Full pytest suite, 100 % pass | ✅ |
 
 ### Quickstart
 
@@ -52,7 +52,7 @@ You need: Linux with `systemd --user`, Python ≥3.11, `uv`, a working `agy` CLI
    ```
 4. **Install the bridge.**
    ```bash
-   git clone https://github.com/hah23255/agy-to-im.git \
+   git clone https://github.com/zxc50389/agy-to-im.git \
      ~/.gemini/extensions/antigravity-telegram-bridge
    cd ~/.gemini/extensions/antigravity-telegram-bridge
    ./install.sh
@@ -82,6 +82,8 @@ For the full step-by-step guide see `docs/deployment.md`. Day-to-day operations 
 ```
 
 ### Text Commands
+* `/model` - Pick a model for this chat (inline keyboard)
+* `/usage` - Show Antigravity model quota usage
 * `/start` - Welcome message
 * `/help` - Usage help
 * `/status` / `/info` - Session summary
@@ -100,7 +102,7 @@ flowchart LR
     Bridge[bridge daemon<br/>Python / systemd --user]
     Agy[agy CLI subprocess<br/>per turn]
     State[(state.json<br/>chat → project dir)]
-    Health[health + metrics<br/>:9100]
+    Health[health + metrics<br/>:9099]
 
     User -->|message| TG
     TG -->|long-poll / webhook| Bridge
@@ -119,13 +121,13 @@ flowchart LR
 | Unauthorized / Token Rejected | The Telegram Bot API token is incorrect, expired, or blocked. | Check that `config.json` contains a valid bot token from BotFather. |
 | Access Denied (User ID Whitelist) | The Telegram user ID sending messages is not in the whitelisted `allowed_user_ids` config array. | Add your user ID obtained from userinfobot to `config.json` and restart the daemon. |
 | `systemd --user` service fails | The systemd user daemon cannot start the service (commonly due to missing user lingering). | Run `loginctl enable-linger` as root/user to allow user session daemons to run when logged out. |
-| Webhook verification fails | The incoming webhook payloads are rejected due to mismatched HMAC signatures. | Check that the webhook endpoint config matches the active bot token, and no proxy is rewriting payload bodies. |
+| Webhook verification fails | The incoming webhook payloads are rejected due to mismatched `X-Telegram-Bot-Api-Secret-Token` headers. | Check that `CTI_WEBHOOK_SECRET` (or the derived secret token) matches what was registered with `setWebhook`. |
 | Chat directory traversal error | A request attempted to read/write paths outside of the whitelisted `chats_root`. | Clean state database `state.json` and ensure no inputs bypass path validation hooks in `src/state.py`. |
 
 ### Common Issues & Golden Rules
 * **Golden Rule 1: Default-Deny Access Control.** Always whitelists allowed user/chat IDs. Never run public-facing bridges without a strict filter list to prevent code execution by unauthorized users.
 * **Golden Rule 2: Virtual Environment Isolation.** Always execute the daemon and tools inside `.venv/` to prevent package version conflicts and runtime import issues.
-* **Golden Rule 3: Webhook HMAC Protection.** Under webhook deployment, always enforce HMAC-SHA256 signature verification on incoming requests to prevent mock payload injection.
+* **Golden Rule 3: Webhook Secret-Token Protection.** Under webhook deployment, always enforce `X-Telegram-Bot-Api-Secret-Token` verification on incoming requests to prevent spoofed payload injection.
 * **Golden Rule 4: Systemd User session lingering.** Always verify that `loginctl enable-linger` is active for the target user, guaranteeing the bridge daemon persists across terminal logouts.
 
 ---
@@ -133,7 +135,7 @@ flowchart LR
 ## Български
 
 ### Какво представлява
-Телеграм мост (daemon) за конзолния инструмент Google Antigravity CLI (`agy`), позволяващ устойчиви, изолирани сесии за редактиране на код през чатове в Telegram. Версия: `0.1.1`.
+Телеграм мост (daemon) за конзолния инструмент Google Antigravity CLI (`agy`), позволяващ устойчиви, изолирани сесии за редактиране на код през чатове в Telegram. Версия: `0.2.0`.
 
 ### Възможности
 | Функция | Статус |
@@ -162,7 +164,7 @@ flowchart LR
    ```
 4. **Инсталирайте моста.**
    ```bash
-   git clone https://github.com/hah23255/agy-to-im.git \
+   git clone https://github.com/zxc50389/agy-to-im.git \
      ~/.gemini/extensions/antigravity-telegram-bridge
    cd ~/.gemini/extensions/antigravity-telegram-bridge
    ./install.sh
@@ -210,7 +212,7 @@ flowchart LR
     Bridge[bridge daemon<br/>Python / systemd --user]
     Agy[agy CLI подпроцес<br/>за всяка стъпка]
     State[(state.json<br/>chat → папка на проекта)]
-    Health[health + metrics<br/>:9100]
+    Health[health + metrics<br/>:9099]
 
     User -->|съобщение| TG
     TG -->|long-poll / webhook| Bridge

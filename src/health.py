@@ -48,10 +48,18 @@ def _read_rss_bytes() -> int:
     return 0
 
 
-def memory_healthy() -> bool:
+def configure_memory_limit(limit_bytes: int) -> None:
+    """Update the resident memory self-restart threshold from config."""
+    global MEMORY_LIMIT_BYTES
+    if limit_bytes > 0:
+        MEMORY_LIMIT_BYTES = limit_bytes
+
+
+def memory_healthy(limit_bytes: int | None = None) -> bool:
     """True if resident memory is below the self-restart threshold."""
     rss = _read_rss_bytes()
-    return rss < MEMORY_LIMIT_BYTES
+    limit = limit_bytes if limit_bytes is not None else MEMORY_LIMIT_BYTES
+    return rss < limit
 
 
 def _health_body() -> bytes:
