@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Protocol
 
 from src.agy_runner import AgyResult
-from src.commands import BridgeReply, handle_callback, handle_text_command
+from src.commands import BOT_COMMANDS, BridgeReply, handle_callback, handle_text_command
 from src.config import Config, load_config
 from src.health import memory_healthy, record_error, record_turn, start_server
 from src.media import build_media_prompt, clean_inbox
@@ -296,6 +296,16 @@ async def _detect_bot_username(cfg: Config) -> str:
     return "?"
 
 
+async def _register_bot_commands(cfg: Config) -> None:
+    cmds = list(BOT_COMMANDS)
+    try:
+        async with TelegramClient(cfg.telegram.bot_token) as tg:
+            await tg.set_my_commands(cmds)
+            await tg.set_my_commands(cmds, scope={"type": "all_private_chats"})
+    except Exception as err:
+        LOG.warning("setMyCommands failed: %s", err)
+
+
 def main() -> None:
     logging.basicConfig(
         level=logging.INFO,
@@ -326,6 +336,7 @@ def main() -> None:
         tg = TelegramClient(cfg.telegram.bot_token)
         try:
             bot_username = await _detect_bot_username(cfg)
+            await _register_bot_commands(cfg)
             info = DaemonInfo(
                 bot_username=bot_username,
                 started_at=time.time(),

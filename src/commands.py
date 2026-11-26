@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 import os
+import shutil
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -16,18 +18,34 @@ if TYPE_CHECKING:
     from src.state import ChatState
     from src.telegram import CallbackQuery, InboundMessage
 
-DEFAULT_MODEL = "gemini-3.7-flash-high"
+DEFAULT_MODEL = "gemini-4-neon-high"
 
 MODEL_CHOICES: tuple[str, ...] = (
-    "gemini-3.7-flash-high",
-    "gemini-3.7-flash-medium",
-    "gemini-3.1-pro-high",
-    "gemini-2.5-pro",
-    "claude-sonnet-4-6",
+    "gemini-4-neon-xhigh",
+    "gemini-4-neon-high",
+    "gemini-4-neon-medium",
+    "gemini-4-neon-low",
+    "gemini-4-carbon-high",
+    "gemini-4-carbon-medium",
+    "gemini-4-carbon-low",
+    "gemini-4-argon-high",
+    "gemini-4-argon-medium",
+    "gemini-4-argon-low",
+    "gemini-4-hydrogen-xhigh",
+    "gemini-4-hydrogen-high",
+    "gemini-4-hydrogen-medium",
+    "gemini-4-hydrogen-low",
+    "gemini-pro-orchestrator-neon",
+    "gemini-pro-orchestrator",
+    "gemini-pro-orchestrator-argon",
 )
 MODE_CHOICES: tuple[tuple[str, str], ...] = (
     ("code", "Code (auto)"),
     ("plan", "Plan (read-only sandbox)"),
+)
+BOT_COMMANDS: tuple[dict[str, str], ...] = (
+    {"command": "model", "description": "Pick a model for this chat"},
+    {"command": "usage", "description": "Show model quota usage"},
 )
 _DEFAULT_TOKEN = "_DEFAULT"
 
@@ -153,6 +171,55 @@ def _render_mode_picker(cs: "ChatState", cfg: "Config") -> BridgeReply:
     )
 
 
+def _format_usage_output(raw: str) -> str:
+    lines = [line for line in raw.splitlines() if line.strip()]
+    if not lines:
+        return "(no usage data)"
+    formatted: list[str] = []
+    parsed_any = False
+    for line in lines:
+        cols = line.split("\t")
+        if len(cols) == 4:
+            parsed_any = True
+            group, label, pct, reset_raw = (c.strip() for c in cols)
+            reset_str = ""
+            if reset_raw:
+                try:
+                    dt = datetime.fromisoformat(reset_raw.replace("Z", "+00:00"))
+                    if dt.year > 1970:
+                        local_dt = dt.astimezone()
+                        reset_str = f" (resets {local_dt.strftime('%Y-%m-%d %H:%M %Z')})"
+                except ValueError:
+                    reset_str = f" ({reset_raw})"
+            formatted.append(f"• {group} — {label}: {pct}{reset_str}")
+        else:
+            formatted.append(line)
+    if parsed_any:
+        return "📊 Model Quota\n\n" + "\n".join(formatted)
+    return raw
+
+
+async def _fetch_usage() -> str:
+    agy_bin = os.environ.get("AGY_BIN") or "agy"
+    resolved = shutil.which(agy_bin) or agy_bin
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            resolved, "-p", "/usage", "--print-timeout", "30s",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=35.0)
+    except asyncio.TimeoutError:
+        return "⚠️ /usage timed out."
+    except Exception as err:
+        return f"⚠️ Failed to fetch usage: {err}"
+    out = stdout.decode("utf-8", errors="replace").strip()
+    if proc.returncode != 0:
+        err_txt = stderr.decode("utf-8", errors="replace").strip()
+        return f"⚠️ /usage failed (exit {proc.returncode}){': ' + err_txt if err_txt else ''}"
+    return _format_usage_output(out)
+
+
 async def handle_text_command(
     msg: "InboundMessage",
     cs: "ChatState",
@@ -163,8 +230,11 @@ async def handle_text_command(
     if not stripped:
         return None
     parts = stripped.split(maxsplit=1)
-    cmd = parts[0].lower()
+    cmd = parts[0].lower().split("@", 1)[0]
     args = parts[1] if len(parts) > 1 else ""
+
+    if cmd == "/usage":
+        return BridgeReply(await _fetch_usage())
 
     if cmd == "/start":
         return BridgeReply(WELCOME_TEXT)

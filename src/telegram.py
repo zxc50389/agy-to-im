@@ -264,3 +264,18 @@ class TelegramClient:
         assert self._client is not None
         r = await self._client.get(f"{self._base}/deleteWebhook")
         return r.json()
+
+    async def set_my_commands(
+        self,
+        commands: list[dict[str, str]],
+        *,
+        scope: dict[str, Any] | None = None,
+    ) -> None:
+        assert self._client is not None
+        payload: dict[str, Any] = {"commands": commands}
+        if scope is not None:
+            payload["scope"] = scope
+        r = await self._client.post(f"{self._base}/setMyCommands", json=payload)
+        data = r.json()
+        if not data.get("ok"):
+            raise RuntimeError(f"setMyCommands failed: {data.get('description')}")

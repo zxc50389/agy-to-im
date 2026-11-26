@@ -71,3 +71,21 @@ async def test_send_chat_action_posts_typing(httpx_mock: HTTPXMock) -> None:
     body = req.read().decode()
     assert "typing" in body
     assert "10" in body
+
+
+async def test_set_my_commands_posts_commands_and_scope(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(
+        url="https://api.telegram.org/botTOKEN/setMyCommands",
+        method="POST",
+        json={"ok": True, "result": True},
+    )
+    async with TelegramClient("TOKEN") as tg:
+        await tg.set_my_commands(
+            [{"command": "model", "description": "Pick a model"}],
+            scope={"type": "all_private_chats"},
+        )
+    req = httpx_mock.get_requests()[0]
+    assert req.method == "POST"
+    body = req.read().decode()
+    assert "model" in body
+    assert "all_private_chats" in body

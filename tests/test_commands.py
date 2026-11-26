@@ -89,10 +89,25 @@ async def test_callback_nav_settings() -> None:
 
 async def test_callback_model_choice() -> None:
     cs = _state()
-    cq = CallbackQuery(update_id=1, callback_query_id="q", chat_id=42, user_id=42, message_id=1, data="m:gemini-2.5-pro")
+    cq = CallbackQuery(update_id=1, callback_query_id="q", chat_id=42, user_id=42, message_id=1, data="m:gemini-4-neon-high")
     reply = handle_callback(cq, cs, _cfg())
-    assert cs.model == "gemini-2.5-pro"
-    assert "gemini-2.5-pro" in reply.toast
+    assert cs.model == "gemini-4-neon-high"
+    assert "gemini-4-neon-high" in reply.toast
+
+
+def test_bot_commands_menu() -> None:
+    from src.commands import BOT_COMMANDS, DEFAULT_MODEL, MODEL_CHOICES, _format_usage_output
+
+    assert DEFAULT_MODEL == "gemini-4-neon-high"
+    assert DEFAULT_MODEL in MODEL_CHOICES
+    assert [c["command"] for c in BOT_COMMANDS] == ["model", "usage"]
+    out = _format_usage_output(
+        "Gemini Models\tWeekly Limit Remaining\t87%\t2026-12-01T01:22:03Z\n"
+        "Claude and GPT models\tFive Hour Limit Remaining\t100%\t1970-01-01T00:00:00Z"
+    )
+    assert "Model Quota" in out
+    assert "87%" in out
+    assert "1970" not in out
 
 
 async def test_callback_reset() -> None:
