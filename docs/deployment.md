@@ -37,7 +37,7 @@ Message [@userinfobot](https://t.me/userinfobot). It replies with your numeric u
 ## Step 3 — Clone
 
 ```sh
-git clone https://github.com/hah23255/agy-to-im.git \
+git clone https://github.com/zxc50389/agy-to-im.git \
   ~/.gemini/extensions/antigravity-telegram-bridge
 cd ~/.gemini/extensions/antigravity-telegram-bridge
 ```
@@ -135,7 +135,7 @@ Without lingering, the user systemd manager only runs while you have an active l
 
 ## Done
 
-The bridge is operational. Day-to-day ops are in [`operations.md`](operations.md). Architecture rationale is in [`design.md`](design.md). Security notes are in [`SECURITY.md`](../SECURITY.md) and [`security-scan.md`](security-scan.md).
+The bridge is operational. Day-to-day ops are in [`operations.md`](operations.md). Architecture rationale is in [`design.md`](design.md). Security notes are in [`security-scan.md`](security-scan.md).
 
 ## What to do if something goes wrong
 
