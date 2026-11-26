@@ -46,6 +46,7 @@ MODE_CHOICES: tuple[tuple[str, str], ...] = (
 BOT_COMMANDS: tuple[dict[str, str], ...] = (
     {"command": "model", "description": "Pick a model for this chat"},
     {"command": "usage", "description": "Show model quota usage"},
+    {"command": "reset", "description": "Start a fresh agy session"},
 )
 _DEFAULT_TOKEN = "_DEFAULT"
 

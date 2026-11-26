@@ -100,7 +100,7 @@ def test_bot_commands_menu() -> None:
 
     assert DEFAULT_MODEL == "gemini-4-neon-high"
     assert DEFAULT_MODEL in MODEL_CHOICES
-    assert [c["command"] for c in BOT_COMMANDS] == ["model", "usage"]
+    assert [c["command"] for c in BOT_COMMANDS] == ["model", "usage", "reset"]
     out = _format_usage_output(
         "Gemini Models\tWeekly Limit Remaining\t87%\t2026-12-01T01:22:03Z\n"
         "Claude and GPT models\tFive Hour Limit Remaining\t100%\t1970-01-01T00:00:00Z"
