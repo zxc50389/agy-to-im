@@ -184,19 +184,19 @@ def test_sync_system_prompt_rule_lifecycle(tmp_path: Path) -> None:
     assert not rule_file.exists()
 
     # Creates managed block
-    out = sync_system_prompt_rule(str(chat_dir), "請一律使用繁體中文回覆")
+    out = sync_system_prompt_rule(str(chat_dir), "Always be concise.")
     assert out == rule_file
     text1 = rule_file.read_text(encoding="utf-8")
     assert "<!-- agy-to-im:system_prompt:start -->" in text1
-    assert "請一律使用繁體中文回覆" in text1
+    assert "Always be concise." in text1
     assert "<!-- agy-to-im:system_prompt:end -->" in text1
 
     # Preserves user-authored notes outside managed block when updated
     rule_file.write_text(text1 + "\n# My Notes\nKeep this.\n", encoding="utf-8")
-    sync_system_prompt_rule(str(chat_dir), "新的系統提示詞")
+    sync_system_prompt_rule(str(chat_dir), "Updated system rule.")
     text2 = rule_file.read_text(encoding="utf-8")
-    assert "新的系統提示詞" in text2
-    assert "請一律使用繁體中文回覆" not in text2
+    assert "Updated system rule." in text2
+    assert "Always be concise." not in text2
     assert "# My Notes\nKeep this." in text2
 
     # Clearing prompt removes only managed block, keeping user notes

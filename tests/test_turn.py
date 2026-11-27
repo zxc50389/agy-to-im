@@ -68,7 +68,7 @@ async def test_execute_agy_forwards_system_prompt(monkeypatch: pytest.MonkeyPatc
 
     async def fake_run_agy(prompt: str, **kwargs: Any) -> AgyResult:
         calls.append({"prompt": prompt, **kwargs})
-        return AgyResult(text="你好", exit_code=0, stderr="")
+        return AgyResult(text="ok", exit_code=0, stderr="")
 
     monkeypatch.setattr("src.turn.run_agy", fake_run_agy)
 
@@ -76,9 +76,9 @@ async def test_execute_agy_forwards_system_prompt(monkeypatch: pytest.MonkeyPatc
     cs = ChatState(chat_dir="/tmp/chat")
     cfg = Config(
         telegram=TelegramConfig(bot_token="t", allowed_user_ids=[42]),
-        agy=AgyConfig(system_prompt="請一律使用繁體中文回覆"),
+        agy=AgyConfig(system_prompt="Always be concise."),
     )
     text, code = await execute_agy(tg, 42, _FakeMsg(text="hello"), cs, cfg, "/usr/bin/agy")
     assert code == 0
-    assert text == "你好"
-    assert calls[0]["system_prompt"] == "請一律使用繁體中文回覆"
+    assert text == "ok"
+    assert calls[0]["system_prompt"] == "Always be concise."

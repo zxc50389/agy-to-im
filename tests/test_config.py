@@ -114,11 +114,11 @@ def test_load_config_systemd_credential_override(tmp_path: Path, sample_config_d
 
 
 def test_system_prompt_loaded_and_validated(tmp_path: Path, sample_config_dict: dict) -> None:
-    sample_config_dict["agy"]["system_prompt"] = "  請一律使用繁體中文回覆  "
+    sample_config_dict["agy"]["system_prompt"] = "  Always be concise.  "
     p = tmp_path / "config.json"
     p.write_text(json.dumps(sample_config_dict))
     cfg = load_config(p)
-    assert cfg.agy.system_prompt == "請一律使用繁體中文回覆"
+    assert cfg.agy.system_prompt == "Always be concise."
 
     sample_config_dict["agy"]["system_prompt"] = ["not-a-string"]
     p.write_text(json.dumps(sample_config_dict))
