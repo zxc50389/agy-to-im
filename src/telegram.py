@@ -171,12 +171,15 @@ class TelegramClient:
         text: str,
         *,
         keyboard: InlineKeyboard | None = None,
+        parse_mode: str | None = None,
     ) -> int | None:
         assert self._client is not None
         first_message_id: int | None = None
         chunks = chunk_message(text)
         for i, chunk in enumerate(chunks):
             payload: dict[str, Any] = {"chat_id": chat_id, "text": chunk}
+            if parse_mode:
+                payload["parse_mode"] = parse_mode
             if i == 0 and keyboard is not None:
                 payload["reply_markup"] = {"inline_keyboard": keyboard}
             r = await self._client.post(f"{self._base}/sendMessage", json=payload)
@@ -197,6 +200,7 @@ class TelegramClient:
         text: str,
         *,
         keyboard: InlineKeyboard | None = None,
+        parse_mode: str | None = None,
     ) -> None:
         assert self._client is not None
         payload: dict[str, Any] = {
@@ -204,6 +208,8 @@ class TelegramClient:
             "message_id": message_id,
             "text": text,
         }
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
         if keyboard is not None:
             payload["reply_markup"] = {"inline_keyboard": keyboard}
         else:

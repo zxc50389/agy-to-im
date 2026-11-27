@@ -35,11 +35,15 @@ class _FakeTelegram:
         await asyncio.sleep(0)
         return []
 
-    async def send_message(self, chat_id: int, text: str, *, keyboard: Any | None = None) -> int | None:
+    async def send_message(
+        self, chat_id: int, text: str, *, keyboard: Any | None = None, parse_mode: str | None = None
+    ) -> int | None:
         self.sent_messages.append((chat_id, text))
         return None
 
-    async def edit_message_text(self, chat_id: int, message_id: int, text: str, *, keyboard: Any | None = None) -> None:
+    async def edit_message_text(
+        self, chat_id: int, message_id: int, text: str, *, keyboard: Any | None = None, parse_mode: str | None = None
+    ) -> None:
         self.sent_messages.append((chat_id, text))
 
     async def answer_callback_query(self, callback_query_id: str, *, text: str = "") -> None:
@@ -253,3 +257,40 @@ async def test_run_logs_one_line_per_turn(
     assert "exit=0" in msg
     assert "ms=" in msg
     assert "reply_len=" in msg
+
+
+async def test_usage_command_sends_typing_and_html(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from src import commands as cmd_mod
+
+    async def _fake_fetch() -> str:
+        return cmd_mod._format_usage_output(
+            "Gemini Models\tWeekly Limit Remaining\t93%\t2026-12-03T07:13:10Z"
+        )
+
+    monkeypatch.setattr(cmd_mod, "_fetch_usage", _fake_fetch)
+    monkeypatch.setattr("src.daemon._QUEUE.check_ratelimit", lambda _uid: (True, 0))
+
+    tg = _FakeTelegram(
+        updates_to_serve=[[_msg("/usage", update_id=500)]],
+        sent_messages=[],
+        chat_actions=[],
+    )
+    stop = asyncio.Event()
+    asyncio.get_running_loop().call_later(0.2, stop.set)
+
+    await run(
+        cfg=_cfg(),
+        state_path=tmp_path / "state.json",
+        chats_root=tmp_path / "chats",
+        tg=tg,
+        agy_path="/usr/bin/true",
+        info=DaemonInfo(bot_username="@bot", started_at=0.0, agy_version="1.0"),
+        stop_event=stop,
+    )
+
+    assert (10, "typing") in tg.chat_actions
+    assert len(tg.sent_messages) == 1
+    assert tg.sent_messages[0][0] == 10
+    assert "<b>Model Quota</b>" in tg.sent_messages[0][1]

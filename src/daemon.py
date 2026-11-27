@@ -45,10 +45,10 @@ class _TelegramLike(Protocol):
     async def get_me(self) -> dict[str, Any]: ...
     async def get_updates(self, offset: int, timeout: int = 30) -> list[dict[str, Any]]: ...
     async def send_message(
-        self, chat_id: int, text: str, *, keyboard: Any | None = None
+        self, chat_id: int, text: str, *, keyboard: Any | None = None, parse_mode: str | None = None
     ) -> int | None: ...
     async def edit_message_text(
-        self, chat_id: int, message_id: int, text: str, *, keyboard: Any | None = None
+        self, chat_id: int, message_id: int, text: str, *, keyboard: Any | None = None, parse_mode: str | None = None
     ) -> None: ...
     async def answer_callback_query(self, callback_query_id: str, *, text: str = "") -> None: ...
     async def send_chat_action(self, chat_id: int, action: str = "typing") -> None: ...
@@ -258,13 +258,24 @@ async def _process_text(
     save_state(state_path, state)
 
     prev_state = (cs.has_session, cs.model, cs.mode)
+    first_tok = msg.text.strip().split(maxsplit=1)[0].lower().split("@", 1)[0] if msg.text.strip() else ""
+    if first_tok == "/usage":
+        try:
+            await tg.send_chat_action(msg.chat_id, "typing")
+        except Exception:
+            pass
     reply = await handle_text_command(msg, cs, cfg)
     if reply is not None:
         if (cs.has_session, cs.model, cs.mode) != prev_state:
             await WORKER_POOL.invalidate(cs.chat_dir)
         save_state(state_path, state)
         try:
-            await tg.send_message(msg.chat_id, reply.text, keyboard=reply.keyboard)
+            if reply.parse_mode:
+                await tg.send_message(
+                    msg.chat_id, reply.text, keyboard=reply.keyboard, parse_mode=reply.parse_mode
+                )
+            else:
+                await tg.send_message(msg.chat_id, reply.text, keyboard=reply.keyboard)
         except Exception as err:
             LOG.error("sendMessage failed chat=%s: %s", msg.chat_id, err)
         return
@@ -315,13 +326,25 @@ async def _process_callback(
     except Exception:
         pass
     try:
-        await tg.edit_message_text(
-            cq.chat_id, cq.message_id, reply.text, keyboard=reply.keyboard
-        )
+        if reply.parse_mode:
+            await tg.edit_message_text(
+                cq.chat_id, cq.message_id, reply.text,
+                keyboard=reply.keyboard, parse_mode=reply.parse_mode,
+            )
+        else:
+            await tg.edit_message_text(
+                cq.chat_id, cq.message_id, reply.text, keyboard=reply.keyboard
+            )
     except Exception as err:
         LOG.warning("editMessageText failed (sending fresh): %s", err)
         try:
-            await tg.send_message(cq.chat_id, reply.text, keyboard=reply.keyboard)
+            if reply.parse_mode:
+                await tg.send_message(
+                    cq.chat_id, reply.text,
+                    keyboard=reply.keyboard, parse_mode=reply.parse_mode,
+                )
+            else:
+                await tg.send_message(cq.chat_id, reply.text, keyboard=reply.keyboard)
         except Exception as err2:
             LOG.error("fallback sendMessage failed: %s", err2)
 

@@ -89,3 +89,23 @@ async def test_set_my_commands_posts_commands_and_scope(httpx_mock: HTTPXMock) -
     body = req.read().decode()
     assert "model" in body
     assert "all_private_chats" in body
+
+
+async def test_send_and_edit_message_pass_parse_mode(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(
+        url="https://api.telegram.org/botTOKEN/sendMessage",
+        method="POST",
+        json={"ok": True, "result": {"message_id": 99}},
+    )
+    httpx_mock.add_response(
+        url="https://api.telegram.org/botTOKEN/editMessageText",
+        method="POST",
+        json={"ok": True, "result": True},
+    )
+    async with TelegramClient("TOKEN") as tg:
+        mid = await tg.send_message(chat_id=10, text="<b>Hi</b>", parse_mode="HTML")
+        assert mid == 99
+        await tg.edit_message_text(chat_id=10, message_id=99, text="<b>Updated</b>", parse_mode="HTML")
+    reqs = httpx_mock.get_requests()
+    assert '"parse_mode":"HTML"' in reqs[0].read().decode().replace(" ", "")
+    assert '"parse_mode":"HTML"' in reqs[1].read().decode().replace(" ", "")

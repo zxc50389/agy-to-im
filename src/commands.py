@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
+import html
 import logging
 import os
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -135,6 +137,7 @@ class BridgeReply:
     text: str
     keyboard: InlineKeyboard | None = None
     toast: str = ""
+    parse_mode: str | None = None
 
 
 def _effective_model(cs: "ChatState", cfg: "Config") -> tuple[str, str]:
@@ -225,32 +228,127 @@ def _render_mode_picker(cs: "ChatState", cfg: "Config") -> BridgeReply:
     )
 
 
-def _format_usage_output(raw: str) -> str:
+_USAGE_GROUP_ALIASES: dict[str, str] = {
+    "gemini models": "Gemini",
+    "claude and gpt models": "Claude & GPT",
+}
+_USAGE_LABEL_ALIASES: dict[str, str] = {
+    "weekly limit remaining": "Weekly",
+    "five hour limit remaining": "5-Hour",
+    "daily limit remaining": "Daily",
+    "hourly limit remaining": "Hourly",
+}
+_USAGE_HEADER_HTML = "📊 <b>Model Quota</b>"
+
+
+def _normalize_usage_group(group: str) -> str:
+    return _USAGE_GROUP_ALIASES.get(group.strip().lower(), group.strip())
+
+
+def _normalize_usage_label(label: str) -> str:
+    cleaned = label.strip()
+    alias = _USAGE_LABEL_ALIASES.get(cleaned.lower())
+    if alias:
+        return alias
+    return re.sub(r"\s+limit\s+remaining$", "", cleaned, flags=re.IGNORECASE)
+
+
+def _usage_bar(pct_raw: str, *, width: int = 10) -> tuple[str, str, str]:
+    """Return (status_dot, bar, padded_pct) for a percentage string like '93%'."""
+    m = re.match(r"^\s*(\d+(?:\.\d+)?)\s*%?\s*$", pct_raw)
+    if not m:
+        return "⚪", "░" * width, pct_raw.strip()
+    pct = max(0.0, min(100.0, float(m.group(1))))
+    pct_int = round(pct)
+    if pct_int >= 50:
+        dot = "🟢"
+    elif pct_int >= 20:
+        dot = "🟡"
+    else:
+        dot = "🔴"
+    if pct_int >= 100:
+        filled = width
+    elif pct_int <= 0:
+        filled = 0
+    else:
+        filled = max(1, min(width - 1, round(pct_int / 100 * width)))
+    bar = "█" * filled + "░" * (width - filled)
+    return dot, bar, f"{pct_int:>3}%"
+
+
+def _format_reset_countdown(reset_raw: str, *, now: datetime) -> str:
+    if not reset_raw:
+        return ""
+    try:
+        dt = datetime.fromisoformat(reset_raw.replace("Z", "+00:00"))
+    except ValueError:
+        return reset_raw
+    if dt.year <= 1970:
+        return ""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    delta_s = int((dt - now).total_seconds())
+    if delta_s <= 0:
+        return "now"
+    if delta_s < 3600:
+        return f"{max(1, delta_s // 60)}m"
+    if delta_s < 86400:
+        h, m = divmod(delta_s // 60, 60)
+        return f"{h}h {m}m" if m else f"{h}h"
+    d, h = divmod(delta_s // 3600, 24)
+    return f"{d}d {h}h" if h else f"{d}d"
+
+
+def _format_usage_output(raw: str, *, now: datetime | None = None) -> str:
     lines = [line for line in raw.splitlines() if line.strip()]
     if not lines:
         return "(no usage data)"
-    formatted: list[str] = []
+    ref_now = now if now is not None else datetime.now(timezone.utc)
+    if ref_now.tzinfo is None:
+        ref_now = ref_now.replace(tzinfo=timezone.utc)
+
+    groups: dict[str, list[tuple[str, str, str]]] = {}
+    extra_lines: list[str] = []
     parsed_any = False
+
     for line in lines:
         cols = line.split("\t")
         if len(cols) == 4:
             parsed_any = True
-            group, label, pct, reset_raw = (c.strip() for c in cols)
-            reset_str = ""
-            if reset_raw:
-                try:
-                    dt = datetime.fromisoformat(reset_raw.replace("Z", "+00:00"))
-                    if dt.year > 1970:
-                        local_dt = dt.astimezone()
-                        reset_str = f" (resets {local_dt.strftime('%Y-%m-%d %H:%M %Z')})"
-                except ValueError:
-                    reset_str = f" ({reset_raw})"
-            formatted.append(f"• {group} — {label}: {pct}{reset_str}")
+            group_raw, label_raw, pct_raw, reset_raw = (c.strip() for c in cols)
+            group = _normalize_usage_group(group_raw)
+            label = _normalize_usage_label(label_raw)
+            groups.setdefault(group, []).append((label, pct_raw, reset_raw))
         else:
-            formatted.append(line)
-    if parsed_any:
-        return "📊 Model Quota\n\n" + "\n".join(formatted)
-    return raw
+            extra_lines.append(line)
+
+    if not parsed_any:
+        return raw
+
+    label_width = min(
+        max((len(lbl) for rows in groups.values() for lbl, _, _ in rows), default=6),
+        10,
+    )
+    sections: list[str] = [_USAGE_HEADER_HTML]
+    for group, rows in groups.items():
+        block = [f"<b>{html.escape(group)}</b>"]
+        for label, pct_raw, reset_raw in rows:
+            dot, bar, pct_disp = _usage_bar(pct_raw)
+            countdown = _format_reset_countdown(reset_raw, now=ref_now)
+            padded_label = f"{label:<{label_width}}"
+            core = html.escape(f"{padded_label} {bar} {pct_disp}")
+            row_str = f"{dot} <code>{core}</code>"
+            if countdown:
+                row_str += f" · <code>{html.escape(countdown)}</code>"
+            block.append(row_str)
+        sections.append("\n".join(block))
+
+    if extra_lines:
+        sections.append("\n".join(html.escape(line) for line in extra_lines))
+
+    updated = ref_now.astimezone().strftime("%H:%M:%S")
+    sections.append(f"<i>Updated {updated}</i>")
+    return "\n\n".join(sections)
 
 
 async def _fetch_usage() -> str:
@@ -274,6 +372,16 @@ async def _fetch_usage() -> str:
     return _format_usage_output(out)
 
 
+async def render_usage_reply() -> BridgeReply:
+    """Fetch quota usage and return a formatted BridgeReply."""
+    text = await _fetch_usage()
+    parse_mode = "HTML" if text.startswith(_USAGE_HEADER_HTML) else None
+    return BridgeReply(
+        text=text,
+        parse_mode=parse_mode,
+    )
+
+
 async def handle_text_command(
     msg: "InboundMessage",
     cs: "ChatState",
@@ -288,7 +396,7 @@ async def handle_text_command(
     args = parts[1] if len(parts) > 1 else ""
 
     if cmd == "/usage":
-        return BridgeReply(await _fetch_usage())
+        return await render_usage_reply()
 
     if cmd == "/start":
         return BridgeReply(WELCOME_TEXT)

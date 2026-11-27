@@ -212,11 +212,11 @@ class _FakeStreamTG:
         self.sent: list[tuple[int, str]] = []
         self.edits: list[tuple[int, int, str]] = []
 
-    async def send_message(self, chat_id: int, text: str, *, keyboard: Any = None) -> int:
+    async def send_message(self, chat_id: int, text: str, *, keyboard: Any = None, parse_mode: str | None = None) -> int:
         self.sent.append((chat_id, text))
         return 777
 
-    async def edit_message_text(self, chat_id: int, message_id: int, text: str, *, keyboard: Any = None) -> None:
+    async def edit_message_text(self, chat_id: int, message_id: int, text: str, *, keyboard: Any = None, parse_mode: str | None = None) -> None:
         self.edits.append((chat_id, message_id, text))
 
 
