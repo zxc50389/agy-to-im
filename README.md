@@ -77,7 +77,8 @@ For the full step-by-step guide see `docs/deployment.md`. Day-to-day operations 
     "auto_compact": "200K",
     "model_prefixes": ["gemini-4-", "gemini-pro-orchestrator"],
     "stream_mode": true,
-    "settings": {}
+    "settings": {},
+    "system_prompt": ""
   }
 }
 ```

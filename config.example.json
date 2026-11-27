@@ -12,6 +12,7 @@
     "auto_compact": "200K",
     "model_prefixes": ["gemini-4-", "gemini-pro-orchestrator"],
     "stream_mode": true,
-    "settings": {}
+    "settings": {},
+    "system_prompt": ""
   }
 }

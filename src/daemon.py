@@ -498,10 +498,11 @@ def main() -> None:
                 agy_version=_detect_agy_version(agy_path),
             )
             LOG.info(
-                "bridge starting bot=%s agy=%s chats_root=%s mode=%s model=%s stream=%s auto_compact=%s models=%d",
+                "bridge starting bot=%s agy=%s chats_root=%s mode=%s model=%s stream=%s auto_compact=%s system_prompt=%s models=%d",
                 info.bot_username, info.agy_version, chats_root,
                 cfg.agy.mode, cfg.agy.model or "(default)",
                 cfg.agy.stream_mode, cfg.agy.auto_compact or "(default)",
+                "yes" if cfg.agy.system_prompt else "no",
                 len(models),
             )
 

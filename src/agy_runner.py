@@ -14,9 +14,11 @@ from __future__ import annotations
 
 import asyncio
 import gc
+import hashlib
 import json
 import logging
 import os
+from pathlib import Path
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -36,6 +38,61 @@ _STRIPPED_ENV_KEYS = frozenset({
     "CTI_WEBHOOK_SECRET",
     "CREDENTIALS_DIRECTORY",
 })
+
+_SYSTEM_PROMPT_FILENAME = "GEMINI.md"
+_SYSTEM_PROMPT_START = "<!-- agy-to-im:system_prompt:start -->"
+_SYSTEM_PROMPT_END = "<!-- agy-to-im:system_prompt:end -->"
+
+
+def sync_system_prompt_rule(chat_dir: str, system_prompt: str) -> Path | None:
+    """Sync `system_prompt` into `{chat_dir}/GEMINI.md` inside a managed marker block.
+
+    Preserves any user-authored text outside the markers, avoids rewriting when
+    unchanged, and removes the managed block (deleting the file if empty) when
+    `system_prompt` is blank.
+    """
+    prompt = system_prompt.strip()
+    rule_path = Path(chat_dir) / _SYSTEM_PROMPT_FILENAME
+
+    if not prompt:
+        if not rule_path.exists():
+            return None
+        existing = rule_path.read_text(encoding="utf-8")
+        start_idx = existing.find(_SYSTEM_PROMPT_START)
+        end_idx = existing.find(_SYSTEM_PROMPT_END, start_idx) if start_idx != -1 else -1
+        if start_idx == -1 or end_idx == -1:
+            return None
+        before = existing[:start_idx].rstrip()
+        after = existing[end_idx + len(_SYSTEM_PROMPT_END):].lstrip()
+        remaining = "\n\n".join(part for part in (before, after) if part)
+        if remaining:
+            new_content = remaining + "\n"
+            if new_content != existing:
+                rule_path.write_text(new_content, encoding="utf-8")
+            return rule_path
+        rule_path.unlink(missing_ok=True)
+        return None
+
+    Path(chat_dir).mkdir(parents=True, exist_ok=True)
+    block = f"{_SYSTEM_PROMPT_START}\n{prompt}\n{_SYSTEM_PROMPT_END}"
+
+    if rule_path.exists():
+        existing = rule_path.read_text(encoding="utf-8")
+        start_idx = existing.find(_SYSTEM_PROMPT_START)
+        end_idx = existing.find(_SYSTEM_PROMPT_END, start_idx) if start_idx != -1 else -1
+        if start_idx != -1 and end_idx != -1:
+            before = existing[:start_idx].rstrip()
+            after = existing[end_idx + len(_SYSTEM_PROMPT_END):].lstrip()
+            parts = [p for p in (before, block, after) if p]
+            new_content = "\n\n".join(parts) + "\n"
+        else:
+            existing_stripped = existing.strip()
+            new_content = f"{block}\n\n{existing_stripped}\n" if existing_stripped else f"{block}\n"
+        if new_content != existing:
+            rule_path.write_text(new_content, encoding="utf-8")
+    else:
+        rule_path.write_text(f"{block}\n", encoding="utf-8")
+    return rule_path
 
 
 # Reap any defunct child processes left by prior subprocess invocations
@@ -186,8 +243,10 @@ async def run_agy(
     print_timeout: str = "15m",
     auto_compact: str = "",
     settings: dict[str, Any] | None = None,
+    system_prompt: str = "",
 ) -> AgyResult:
     """Run agy in one-shot print mode. Returns when the turn ends."""
+    sync_system_prompt_rule(chat_dir, system_prompt)
     args = _build_args(
         agy_path=agy_path,
         prompt=prompt,
@@ -463,9 +522,11 @@ class AgyWorkerPool:
         agy_path: str,
         auto_compact: str,
         settings: dict[str, Any] | None,
+        system_prompt: str = "",
     ) -> tuple[str, ...]:
         settings_json = json.dumps(settings, sort_keys=True, separators=(",", ":")) if settings else ""
-        return (chat_dir, model, mode, agy_path, auto_compact, settings_json)
+        sp_digest = hashlib.sha256(system_prompt.strip().encode("utf-8")).hexdigest()[:16] if system_prompt.strip() else ""
+        return (chat_dir, model, mode, agy_path, auto_compact, settings_json, sp_digest)
 
     async def invalidate(self, chat_dir: str) -> None:
         worker = self._workers.pop(chat_dir, None)
@@ -490,8 +551,10 @@ class AgyWorkerPool:
         timeout: float | None = None,
         auto_compact: str = "",
         settings: dict[str, Any] | None = None,
+        system_prompt: str = "",
         on_event: StreamCallback | None = None,
     ) -> AgyResult:
+        sync_system_prompt_rule(chat_dir, system_prompt)
         key = self._make_key(
             chat_dir=chat_dir,
             model=model,
@@ -499,6 +562,7 @@ class AgyWorkerPool:
             agy_path=agy_path,
             auto_compact=auto_compact,
             settings=settings,
+            system_prompt=system_prompt,
         )
         worker = self._workers.get(chat_dir)
         reused = False

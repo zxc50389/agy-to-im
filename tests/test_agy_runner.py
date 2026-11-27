@@ -171,3 +171,54 @@ def test_build_args_plan_sandbox() -> None:
     assert "--mode" in args and "plan" in args
     assert "--sandbox" in args
     assert "-p" in args and "run-security-scan" in args
+
+
+def test_sync_system_prompt_rule_lifecycle(tmp_path: Path) -> None:
+    from src.agy_runner import AgyWorkerPool, sync_system_prompt_rule
+
+    chat_dir = tmp_path / "chat"
+    rule_file = chat_dir / "GEMINI.md"
+
+    # Empty prompt with no existing file does nothing
+    assert sync_system_prompt_rule(str(chat_dir), "") is None
+    assert not rule_file.exists()
+
+    # Creates managed block
+    out = sync_system_prompt_rule(str(chat_dir), "請一律使用繁體中文回覆")
+    assert out == rule_file
+    text1 = rule_file.read_text(encoding="utf-8")
+    assert "<!-- agy-to-im:system_prompt:start -->" in text1
+    assert "請一律使用繁體中文回覆" in text1
+    assert "<!-- agy-to-im:system_prompt:end -->" in text1
+
+    # Preserves user-authored notes outside managed block when updated
+    rule_file.write_text(text1 + "\n# My Notes\nKeep this.\n", encoding="utf-8")
+    sync_system_prompt_rule(str(chat_dir), "新的系統提示詞")
+    text2 = rule_file.read_text(encoding="utf-8")
+    assert "新的系統提示詞" in text2
+    assert "請一律使用繁體中文回覆" not in text2
+    assert "# My Notes\nKeep this." in text2
+
+    # Clearing prompt removes only managed block, keeping user notes
+    sync_system_prompt_rule(str(chat_dir), "")
+    text3 = rule_file.read_text(encoding="utf-8")
+    assert "<!-- agy-to-im:system_prompt:start -->" not in text3
+    assert text3.strip() == "# My Notes\nKeep this."
+
+    # If file only had managed block, clearing deletes the file
+    chat_dir2 = tmp_path / "chat2"
+    sync_system_prompt_rule(str(chat_dir2), "Temp rule")
+    assert (chat_dir2 / "GEMINI.md").exists()
+    sync_system_prompt_rule(str(chat_dir2), "")
+    assert not (chat_dir2 / "GEMINI.md").exists()
+
+    # Worker pool key changes when system_prompt changes
+    k1 = AgyWorkerPool._make_key(
+        chat_dir="/tmp/c", model="m", mode="code", agy_path="agy",
+        auto_compact="", settings=None, system_prompt="A",
+    )
+    k2 = AgyWorkerPool._make_key(
+        chat_dir="/tmp/c", model="m", mode="code", agy_path="agy",
+        auto_compact="", settings=None, system_prompt="B",
+    )
+    assert k1 != k2

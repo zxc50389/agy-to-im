@@ -68,6 +68,7 @@ async def execute_agy(
                 timeout=AGY_TIMEOUT_S,
                 auto_compact=cfg.agy.auto_compact,
                 settings=cfg.agy.settings,
+                system_prompt=cfg.agy.system_prompt,
                 on_event=on_event,
             )
         else:
@@ -81,6 +82,7 @@ async def execute_agy(
                 timeout=AGY_TIMEOUT_S,
                 auto_compact=cfg.agy.auto_compact,
                 settings=cfg.agy.settings,
+                system_prompt=cfg.agy.system_prompt,
             )
         if result.exit_code == 0:
             graphify_bin = shutil.which("graphify")

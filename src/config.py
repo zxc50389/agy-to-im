@@ -34,6 +34,7 @@ class AgyConfig:
     model_prefixes: list[str] = field(default_factory=list)
     stream_mode: bool = False  # persistent stream-json worker + live Telegram streaming
     settings: dict[str, Any] = field(default_factory=dict)  # inline JSON passed to --settings
+    system_prompt: str = ""  # synced to {chat_dir}/GEMINI.md as an always-on agy rule
 
 
 @dataclass
@@ -174,6 +175,14 @@ def load_config(path: Path) -> Config:
     else:
         raise ConfigError("agy.settings must be a JSON object")
 
+    raw_system_prompt = a_raw.get("system_prompt")
+    if raw_system_prompt is None:
+        system_prompt = ""
+    elif isinstance(raw_system_prompt, str):
+        system_prompt = raw_system_prompt.strip()
+    else:
+        raise ConfigError("agy.system_prompt must be a string")
+
     return Config(
         telegram=TelegramConfig(
             bot_token=bot_token,
@@ -189,6 +198,7 @@ def load_config(path: Path) -> Config:
             model_prefixes=model_prefixes,
             stream_mode=stream_mode,
             settings=agy_settings,
+            system_prompt=system_prompt,
         ),
         safety=_parse_safety(raw.get("safety")),
     )
